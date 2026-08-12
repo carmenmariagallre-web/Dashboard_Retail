@@ -1,26 +1,27 @@
 """
-Funciones del pipeline de segmentacion de clientes (RFM + K-Means + Arbol explicativo).
-Separadas del archivo de la app de Streamlit para poder probarlas y reutilizarlas.
+Pipeline de segmentacion de clientes.
+
+IMPORTANTE: este archivo NO entrena ningun modelo. El modelo (K-Means), el escalador
+(StandardScaler) y el arbol de decision explicativo fueron entrenados por el usuario en su
+propio notebook de Google Colab y exportados como archivos .pkl (con joblib). Este modulo
+solo carga esos archivos y los aplica sobre datos nuevos:
+
+    - load_and_clean / compute_rfm  -> preparan los datos (limpieza + calculo de RFM),
+      con las mismas reglas usadas en el notebook.
+    - cargar_modelo                 -> carga los 5 .pkl entrenados en Colab.
+    - aplicar_modelo                -> transforma y predice usando esos objetos ya
+      entrenados (scaler.transform + kmeans.predict), sin volver a ajustarlos.
+    - explicar_con_arbol            -> usa el arbol ya entrenado para generar las reglas
+      de negocio, sin reentrenarlo.
 """
 
 import datetime as dt
 
+import joblib
 import numpy as np
 import pandas as pd
-from sklearn.cluster import KMeans
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.tree import DecisionTreeClassifier, export_text
-
-# Nombres de negocio para los segmentos, ordenados de mejor a peor cliente.
-# Se asignan segun el ranking de Gasto_Total promedio de cada cluster (de mayor a menor).
-SEGMENT_NAMES = {
-    2: ["Activo", "Inactivo"],
-    3: ["Oro", "Plata", "Inactivo"],
-    4: ["Oro", "Plata", "Bronce", "Inactivo"],
-    5: ["Oro", "Plata", "Bronce", "Nuevo", "Inactivo"],
-}
+from sklearn.tree import export_text
 
 REQUIRED_COLUMNS = [
     "InvoiceNo",
@@ -33,11 +34,20 @@ REQUIRED_COLUMNS = [
     "Country",
 ]
 
+# Nombres de los 5 archivos exportados desde Colab (deben vivir junto a este archivo).
+ARCHIVOS_MODELO = {
+    "scaler": "scaler_clientes.pkl",
+    "kmeans": "modelo_clientes.pkl",
+    "columnas": "columnas_clientes.pkl",
+    "mapeo": "mapeo_segmentos.pkl",
+    "arbol": "arbol_clientes.pkl",
+}
+
 
 def load_and_clean(file_or_path) -> pd.DataFrame:
     """Carga el Excel de Online Retail y aplica la limpieza estandar del proyecto.
 
-    Reglas de limpieza (mismas que se validaron en el notebook de analisis):
+    Reglas de limpieza (las mismas que se usaron en el notebook de Colab):
     - Se descartan filas sin CustomerID (no se puede segmentar un cliente desconocido).
     - Se descartan cancelaciones (InvoiceNo que empieza con 'C').
     - Se descartan Quantity <= 0 y UnitPrice <= 0 (errores / devoluciones).
@@ -66,49 +76,65 @@ def load_and_clean(file_or_path) -> pd.DataFrame:
 
 
 def compute_rfm(df_clean: pd.DataFrame) -> pd.DataFrame:
-    """Calcula Dias_Ultima_Compra (Recencia), Frecuencia y Gasto_Total (Monetario) por cliente."""
+    """Calcula Recencia, Frecuencia y Monetario por cliente (mismos nombres que en Colab)."""
     fecha_referencia = df_clean["InvoiceDate"].max() + dt.timedelta(days=1)
 
     rfm = (
         df_clean.groupby("CustomerID")
         .agg(
-            Dias_Ultima_Compra=("InvoiceDate", lambda x: (fecha_referencia - x.max()).days),
+            Recencia=("InvoiceDate", lambda x: (fecha_referencia - x.max()).days),
             Frecuencia=("InvoiceNo", "nunique"),
-            Gasto_Total=("TotalPrice", "sum"),
+            Monetario=("TotalPrice", "sum"),
         )
         .reset_index()
     )
     return rfm
 
 
-def run_clustering(rfm: pd.DataFrame, k: int = 4, random_state: int = 42):
-    """Transforma (log), escala, corre K-Means y asigna nombres de segmento de negocio.
+def cargar_modelo(carpeta: str = "."):
+    """Carga los 5 artefactos entrenados en Colab (no entrena nada nuevo)."""
+    import os
 
-    Los nombres se asignan ordenando los clusters por Gasto_Total promedio (de mayor a
-    menor) y repartiendo SEGMENT_NAMES[k] en ese orden. Esto hace que el nombre "Oro"
-    siempre caiga en el cluster que mas gasta, sin importar el numero interno que le
-    puso K-Means (que es arbitrario).
-    """
+    rutas = {k: os.path.join(carpeta, v) for k, v in ARCHIVOS_MODELO.items()}
+    faltantes = [v for v in rutas.values() if not os.path.exists(v)]
+    if faltantes:
+        raise FileNotFoundError(
+            "Faltan archivos del modelo entrenado en Colab: " + ", ".join(faltantes)
+        )
+
+    scaler = joblib.load(rutas["scaler"])
+    kmeans = joblib.load(rutas["kmeans"])
+    columnas = joblib.load(rutas["columnas"])
+    mapeo = joblib.load(rutas["mapeo"])
+    arbol = joblib.load(rutas["arbol"])
+    return scaler, kmeans, columnas, mapeo, arbol
+
+
+def aplicar_modelo(rfm: pd.DataFrame, scaler, kmeans, columnas, mapeo) -> pd.DataFrame:
+    """Aplica el scaler y el K-Means YA ENTRENADOS (transform/predict, no fit)."""
     rfm = rfm.copy()
-    rfm["Dias_Ultima_Compra_log"] = np.log1p(rfm["Dias_Ultima_Compra"])
+    rfm["Recencia_log"] = np.log1p(rfm["Recencia"])
     rfm["Frecuencia_log"] = np.log1p(rfm["Frecuencia"])
-    rfm["Gasto_Total_log"] = np.log1p(rfm["Gasto_Total"])
+    rfm["Monetario_log"] = np.log1p(rfm["Monetario"])
 
-    cols_log = ["Dias_Ultima_Compra_log", "Frecuencia_log", "Gasto_Total_log"]
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(rfm[cols_log])
+    X_log = rfm[columnas]
+    X_scaled_arr = scaler.transform(X_log)
 
-    kmeans = KMeans(n_clusters=k, random_state=random_state, n_init=10)
-    rfm["Cluster"] = kmeans.fit_predict(X_scaled)
+    # El K-Means de Colab se entreno con un DataFrame cuyas columnas se llamaban
+    # "*_scaled" (no "*_log"), asi que reconstruimos esos mismos nombres antes de
+    # predecir -- si no, sklearn rechaza la prediccion por nombres de columna distintos.
+    nombres_escalados = getattr(kmeans, "feature_names_in_", None)
+    if nombres_escalados is not None:
+        X_scaled = pd.DataFrame(X_scaled_arr, columns=nombres_escalados, index=rfm.index)
+    else:
+        X_scaled = X_scaled_arr
 
-    orden_clusters = (
-        rfm.groupby("Cluster")["Gasto_Total"].mean().sort_values(ascending=False).index.tolist()
-    )
-    nombres = SEGMENT_NAMES.get(k, [f"Segmento {i + 1}" for i in range(k)])
-    mapeo = {cluster_id: nombres[i] for i, cluster_id in enumerate(orden_clusters)}
+    rfm["Cluster"] = kmeans.predict(X_scaled)
     rfm["Segmento"] = rfm["Cluster"].map(mapeo)
 
-    return rfm, kmeans, scaler
+    # Nombres de negocio usados en el resto de la app y el dashboard.
+    rfm = rfm.rename(columns={"Recencia": "Dias_Ultima_Compra", "Monetario": "Gasto_Total"})
+    return rfm
 
 
 def resumen_por_segmento(rfm: pd.DataFrame) -> pd.DataFrame:
@@ -129,19 +155,14 @@ def resumen_por_segmento(rfm: pd.DataFrame) -> pd.DataFrame:
     return resumen
 
 
-def train_explain_tree(rfm: pd.DataFrame, max_depth: int = 4):
-    """Entrena un arbol de decision para explicar los segmentos con reglas legibles."""
+def explicar_con_arbol(rfm: pd.DataFrame, arbol):
+    """Usa el arbol YA ENTRENADO en Colab para generar reglas y medir que tan bien
+    explica los segmentos del archivo cargado actualmente (no se reentrena nada)."""
     X = rfm[["Dias_Ultima_Compra", "Frecuencia", "Gasto_Total"]]
     y = rfm["Segmento"]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y
-    )
-
-    arbol = DecisionTreeClassifier(max_depth=max_depth, random_state=42)
-    arbol.fit(X_train, y_train)
-
-    accuracy = accuracy_score(y_test, arbol.predict(X_test))
+    y_pred = arbol.predict(X)
+    accuracy = accuracy_score(y, y_pred)
     reglas_texto = export_text(arbol, feature_names=list(X.columns))
     importancias = (
         pd.DataFrame({"Variable": X.columns, "Importancia": arbol.feature_importances_})
@@ -149,4 +170,4 @@ def train_explain_tree(rfm: pd.DataFrame, max_depth: int = 4):
         .reset_index(drop=True)
     )
 
-    return arbol, accuracy, reglas_texto, importancias
+    return accuracy, reglas_texto, importancias

@@ -1,6 +1,11 @@
 """
 PMV - Dashboard de Segmentacion Inteligente de Clientes (Retail Online)
 
+Este dashboard NO entrena ningun modelo: carga el K-Means, el StandardScaler y el arbol
+de decision que el usuario entreno en su propio notebook de Google Colab (exportados como
+.pkl con joblib) y los aplica sobre los datos que se suban. Los 5 archivos .pkl deben estar
+en la misma carpeta que este archivo.
+
 Como correrlo localmente:
     pip install -r requirements.txt
     streamlit run app.py
@@ -8,8 +13,7 @@ Como correrlo localmente:
 Como usarlo:
     1. Sube tu archivo "Online Retail.xlsx" (o uno con las mismas columnas) en la barra lateral,
        o activa "Usar dataset de ejemplo (UCI)" para descargarlo automaticamente.
-    2. Elige el numero de segmentos (k) para el clustering.
-    3. Explora los KPIs, graficos, la tabla de clientes y las reglas de negocio del arbol.
+    2. El dashboard limpia los datos, calcula RFM y aplica el modelo ya entrenado.
 """
 
 import io
@@ -19,20 +23,25 @@ import plotly.express as px
 import requests
 import streamlit as st
 
-from rfm_utils import compute_rfm, load_and_clean, resumen_por_segmento, run_clustering, train_explain_tree
+from rfm_utils import (
+    aplicar_modelo,
+    cargar_modelo,
+    compute_rfm,
+    explicar_con_arbol,
+    load_and_clean,
+    resumen_por_segmento,
+)
 
 UCI_URL = "https://archive.ics.uci.edu/static/public/352/online+retail.zip"
 
-# Orden de negocio (de mejor a peor cliente) y color asociado a cada segmento posible.
+# Orden de negocio (de mejor a peor cliente) y color asociado a cada segmento.
 # Los colores estan pensados para que el nombre y el color coincidan intuitivamente
 # (Oro = dorado, Plata = plateado, Bronce = cobre, Inactivo = gris apagado).
-SEGMENT_ORDER = ["Oro", "Plata", "Bronce", "Nuevo", "Activo", "Inactivo"]
+SEGMENT_ORDER = ["Oro", "Plata", "Bronce", "Inactivo"]
 SEGMENT_COLORS = {
     "Oro": "#E8B84B",
     "Plata": "#AEB4BD",
     "Bronce": "#C97D4B",
-    "Nuevo": "#4C9AFF",
-    "Activo": "#4C9AFF",
     "Inactivo": "#6B7280",
 }
 
@@ -40,7 +49,6 @@ st.set_page_config(page_title="Segmentación de Clientes - Retail Online", layou
 
 
 def _orden_presente(valores) -> list:
-    """Devuelve SEGMENT_ORDER filtrado a los segmentos que realmente existen en los datos."""
     return [s for s in SEGMENT_ORDER if s in set(valores)]
 
 
@@ -56,19 +64,26 @@ def _descargar_dataset_demo() -> bytes:
         return z.read(nombre)
 
 
+@st.cache_resource(show_spinner=False)
+def _cargar_modelo_entrenado():
+    """Carga (una sola vez) los 5 artefactos entrenados en Colab. No entrena nada."""
+    return cargar_modelo(".")
+
+
 @st.cache_data(show_spinner=False)
-def _procesar(archivo_bytes: bytes, k: int):
+def _procesar(archivo_bytes: bytes):
     df_clean = load_and_clean(io.BytesIO(archivo_bytes))
     rfm = compute_rfm(df_clean)
-    rfm, kmeans, scaler = run_clustering(rfm, k=k)
+    scaler, kmeans, columnas, mapeo, arbol = _cargar_modelo_entrenado()
+    rfm = aplicar_modelo(rfm, scaler, kmeans, columnas, mapeo)
     resumen = resumen_por_segmento(rfm)
-    arbol, accuracy, reglas, importancias = train_explain_tree(rfm, max_depth=4)
+    accuracy, reglas, importancias = explicar_con_arbol(rfm, arbol)
     return df_clean, rfm, resumen, accuracy, reglas, importancias
 
 
-# --- Barra lateral: carga de datos y parametros ---
+# --- Barra lateral: carga de datos ---
 st.sidebar.title("⚙️ Configuración")
-st.sidebar.markdown("**1. Datos**")
+st.sidebar.markdown("**Datos**")
 
 usar_demo = st.sidebar.checkbox("Usar dataset de ejemplo (UCI Online Retail)", value=True)
 archivo_subido = None
@@ -78,13 +93,11 @@ if not usar_demo:
         type=["xlsx"],
     )
 
-st.sidebar.markdown("**2. Segmentación**")
-k = st.sidebar.slider("Número de segmentos", min_value=2, max_value=5, value=4)
-
 st.sidebar.markdown("---")
 st.sidebar.caption(
-    "Esta app hace todo el proceso automáticamente: limpia los datos, calcula el historial "
-    "de compra de cada cliente y los agrupa en segmentos con Machine Learning."
+    "Este dashboard usa el modelo de K-Means, el escalador y el árbol de decisión "
+    "entrenados en Google Colab (archivos .pkl). No reentrena nada: solo limpia los "
+    "datos, calcula RFM y aplica el modelo ya entrenado."
 )
 
 # --- Titulo ---
@@ -105,8 +118,14 @@ if archivo_bytes is None:
 
 # --- Procesar (con manejo de errores simple) ---
 try:
-    with st.spinner("Procesando datos y generando segmentos..."):
-        df_clean, rfm, resumen, accuracy, reglas, importancias = _procesar(archivo_bytes, k)
+    with st.spinner("Procesando datos y aplicando el modelo entrenado..."):
+        df_clean, rfm, resumen, accuracy, reglas, importancias = _procesar(archivo_bytes)
+except FileNotFoundError as e:
+    st.error(
+        f"{e}\n\nRecuerda subir los 5 archivos .pkl (scaler_clientes.pkl, modelo_clientes.pkl, "
+        "columnas_clientes.pkl, mapeo_segmentos.pkl, arbol_clientes.pkl) al repositorio, junto a app.py."
+    )
+    st.stop()
 except Exception as e:
     st.error(f"No se pudo procesar el archivo: {e}")
     st.stop()
@@ -116,7 +135,7 @@ paleta = {s: SEGMENT_COLORS.get(s, "#4C9AFF") for s in orden}
 resumen = resumen.set_index("Segmento").loc[orden].reset_index()
 
 # ============================================================
-# KPIs principales (los 4 que pide el reto)
+# KPIs principales
 # ============================================================
 total_clientes = int(rfm.shape[0])
 num_segmentos = int(rfm["Segmento"].nunique())
@@ -171,32 +190,38 @@ for f in frases:
 st.markdown("---")
 
 # ============================================================
-# Graficos: distribucion de clientes y comparacion de gasto
+# Graficos: distribucion de clientes e ingresos por segmento (dos donuts en paralelo)
 # ============================================================
 col_izq, col_der = st.columns(2)
 
 with col_izq:
     st.subheader("Clientes por segmento")
-    fig_pie = px.pie(
+    fig_pie_clientes = px.pie(
         resumen, names="Segmento", values="Clientes", hole=0.45,
         color="Segmento", color_discrete_map=paleta,
         category_orders={"Segmento": orden},
     )
-    fig_pie.update_traces(textinfo="percent+label")
-    fig_pie.update_layout(legend_title_text="", margin=dict(t=10, b=10))
-    st.plotly_chart(fig_pie, use_container_width=True)
+    fig_pie_clientes.update_traces(textinfo="percent+label")
+    fig_pie_clientes.update_layout(legend_title_text="", margin=dict(t=10, b=10))
+    st.plotly_chart(fig_pie_clientes, use_container_width=True)
     st.caption("Qué proporción de tu base de clientes cae en cada segmento.")
 
 with col_der:
-    st.subheader("Gasto total por segmento")
-    fig_bar = px.bar(
-        resumen, x="Segmento", y="Gasto_Total_suma", color="Segmento",
-        color_discrete_map=paleta, category_orders={"Segmento": orden},
-        labels={"Gasto_Total_suma": "Ingresos (£)"}, text_auto=".2s",
+    st.subheader("Ingresos por segmento")
+    fig_pie_ingresos = px.pie(
+        resumen, names="Segmento", values="Gasto_Total_suma", hole=0.45,
+        color="Segmento", color_discrete_map=paleta,
+        category_orders={"Segmento": orden},
     )
-    fig_bar.update_layout(showlegend=False, margin=dict(t=10, b=10))
-    st.plotly_chart(fig_bar, use_container_width=True)
-    st.caption("Cuánto dinero ha generado cada segmento en total.")
+    fig_pie_ingresos.update_traces(textinfo="percent+label")
+    fig_pie_ingresos.update_layout(legend_title_text="", margin=dict(t=10, b=10))
+    st.plotly_chart(fig_pie_ingresos, use_container_width=True)
+    st.caption("Qué proporción de tus ingresos totales genera cada segmento.")
+
+st.caption(
+    "Comparar los dos donuts lado a lado muestra el contraste: el segmento Inactivo puede ser "
+    "el más grande en número de clientes, pero el más pequeño en ingresos — y viceversa con Oro."
+)
 
 # ============================================================
 # Representacion visual de los clusters
@@ -245,9 +270,11 @@ st.dataframe(
 # ============================================================
 with st.expander("🔍 Detalle técnico: cómo el modelo distingue cada segmento"):
     st.markdown(
-        "Un árbol de decisión entrenado para reconocer estos segmentos logra "
-        f"**{accuracy:.1%} de precisión**, usando estas 3 señales del cliente:"
+        "Estas son las reglas del árbol de decisión **entrenado en Colab** (no se reentrena aquí). "
+        f"Sobre los datos cargados actualmente, esas reglas coinciden con el segmento asignado por "
+        f"K-Means en el **{accuracy:.1%}** de los casos."
     )
+    st.markdown("**Importancia de cada variable:**")
     st.dataframe(
         importancias.rename(columns={"Variable": "Variable", "Importancia": "Peso en la decisión"}),
         use_container_width=True, hide_index=True,
