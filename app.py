@@ -168,6 +168,24 @@ if "Oro" in resumen["Segmento"].values:
         f"El segmento **Oro** son solo el **{pct_clientes:.0%}** de tus clientes, pero generan el "
         f"**{pct_ingreso:.0%}** de tus ingresos. Son tu prioridad para fidelizar."
     )
+if "Plata" in resumen["Segmento"].values:
+    fila = resumen[resumen["Segmento"] == "Plata"].iloc[0]
+    frases.append(
+        f"**Plata** = clientes regulares que ya llevan un tiempo sin volver. El segmento **Plata** "
+        f"({fila['Clientes']:,.0f} clientes) compra con cierta regularidad "
+        f"(cada ~{fila['Dias_Ultima_Compra_prom']:.0f} días desde su última compra); con el incentivo correcto "
+        "podrían pasar a Oro."
+    )
+if "Bronce" in resumen["Segmento"].values:
+    fila = resumen[resumen["Segmento"] == "Bronce"].iloc[0]
+    pct_clientes = fila["Clientes"] / total_clientes
+    pct_ingreso = fila["Gasto_Total_suma"] / ingreso_total
+    frases.append(
+        f"**Bronce** = clientes que compraron hace poco pero muy pocas veces — probablemente nuevos o "
+        f"compradores ocasionales. Son el **{pct_clientes:.0%}** de tus clientes "
+        f"({fila['Clientes']:,.0f} personas) pero solo el **{pct_ingreso:.0%}** de tus ingresos; la oportunidad "
+        "aquí es lograr que compren una segunda y tercera vez."
+    )
 if "Inactivo" in resumen["Segmento"].values:
     fila = resumen[resumen["Segmento"] == "Inactivo"].iloc[0]
     pct_clientes = fila["Clientes"] / total_clientes
@@ -177,13 +195,6 @@ if "Inactivo" in resumen["Segmento"].values:
         f"**{fila['Dias_Ultima_Compra_prom']:.0f} días** sin comprar. En el pasado gastaron un total de "
         f"£{fila['Gasto_Total_suma']:,.0f} — son candidatos para una campaña de reactivación, no para "
         "marketing regular."
-    )
-if "Plata" in resumen["Segmento"].values:
-    fila = resumen[resumen["Segmento"] == "Plata"].iloc[0]
-    frases.append(
-        f"El segmento **Plata** ({fila['Clientes']:,.0f} clientes) compra con cierta regularidad "
-        f"(cada ~{fila['Dias_Ultima_Compra_prom']:.0f} días desde su última compra); con el incentivo correcto "
-        "podrían pasar a Oro."
     )
 
 for f in frases:
