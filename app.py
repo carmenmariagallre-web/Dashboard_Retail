@@ -224,26 +224,33 @@ st.caption(
 )
 
 # ============================================================
-# Representacion visual de los clusters
+# Representacion visual de los clusters (mapa por segmento, no por cliente individual)
 # ============================================================
-st.subheader("Mapa de clientes")
+st.subheader("Mapa de segmentos")
 st.caption(
-    "Cada punto es un cliente. Más a la izquierda = compró más recientemente. Más arriba = compra más seguido. "
-    "El tamaño del punto es cuánto ha gastado en total."
+    "Cada burbuja es un segmento completo (no un cliente individual). Más a la izquierda = compran más "
+    "recientemente en promedio. Más arriba = compran más seguido en promedio. El tamaño de la burbuja es "
+    "cuánto genera ese segmento en ingresos totales."
 )
-fig_scatter = px.scatter(
-    rfm, x="Dias_Ultima_Compra", y="Frecuencia", size="Gasto_Total", color="Segmento",
-    color_discrete_map=paleta, category_orders={"Segmento": orden},
-    hover_data={"CustomerID": True, "Gasto_Total": ":,.0f", "Dias_Ultima_Compra": True, "Frecuencia": True},
-    labels={"Dias_Ultima_Compra": "Días desde última compra", "Frecuencia": "Frecuencia de compra"},
-    opacity=0.65, log_y=True,
+fig_burbujas = px.scatter(
+    resumen, x="Dias_Ultima_Compra_prom", y="Frecuencia_prom", size="Gasto_Total_suma",
+    color="Segmento", color_discrete_map=paleta, category_orders={"Segmento": orden},
+    text="Segmento", size_max=90,
+    hover_data={
+        "Segmento": False,
+        "Clientes": True,
+        "Dias_Ultima_Compra_prom": ":.0f",
+        "Frecuencia_prom": ":.1f",
+        "Gasto_Total_suma": ":,.0f",
+    },
+    labels={
+        "Dias_Ultima_Compra_prom": "Días desde última compra (promedio)",
+        "Frecuencia_prom": "Frecuencia de compra (promedio)",
+    },
 )
-fig_scatter.update_layout(legend_title_text="", margin=dict(t=10, b=10))
-st.plotly_chart(fig_scatter, use_container_width=True)
-st.caption(
-    "El eje de frecuencia usa una escala ajustada (logarítmica) para poder ver bien tanto a los clientes "
-    "que compran poco como a los que compran mucho, sin que estos últimos aplasten la gráfica."
-)
+fig_burbujas.update_traces(textposition="middle center", textfont=dict(color="black", size=13))
+fig_burbujas.update_layout(showlegend=False, margin=dict(t=10, b=10))
+st.plotly_chart(fig_burbujas, use_container_width=True)
 
 # ============================================================
 # Tabla resumen con metricas RFM por segmento
