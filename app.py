@@ -172,9 +172,11 @@ if "Inactivo" in resumen["Segmento"].values:
     fila = resumen[resumen["Segmento"] == "Inactivo"].iloc[0]
     pct_clientes = fila["Clientes"] / total_clientes
     frases.append(
-        f"**{fila['Clientes']:,.0f} clientes ({pct_clientes:.0%})** llevan en promedio "
+        f"**Inactivo** = clientes que dejaron de comprar hace mucho tiempo y probablemente no van a volver "
+        f"por sí solos. **{fila['Clientes']:,.0f} clientes ({pct_clientes:.0%})** llevan en promedio "
         f"**{fila['Dias_Ultima_Compra_prom']:.0f} días** sin comprar. En el pasado gastaron un total de "
-        f"£{fila['Gasto_Total_suma']:,.0f} — son candidatos para una campaña de reactivación."
+        f"£{fila['Gasto_Total_suma']:,.0f} — son candidatos para una campaña de reactivación, no para "
+        "marketing regular."
     )
 if "Plata" in resumen["Segmento"].values:
     fila = resumen[resumen["Segmento"] == "Plata"].iloc[0]
